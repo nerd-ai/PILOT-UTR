@@ -1,0 +1,129 @@
+defaults:
+  - _self_
+  - /callbacks: [checkpoint_every_n_steps, checkpoint_monitor, learning_rate_monitor]
+  - /model: dnaconv
+  - /strategy: ddp
+  - /noise: loglinear
+  - /lr_scheduler: constant_warmup
+
+mode: train  
+diffusion: absorbing_state
+backbone: cnn  
+parameterization: subs 
+time_conditioning: False
+T: 0  # 0 (continuous time) / 1000 
+subs_masking: False
+debug_mode: False
+
+model:
+  length: 50
+
+seed: 1
+
+data:
+  tokenizer_type: simple_vocab
+  tokenizer_vocab_path: ${cwd:}/data_and_model/data/4_base_token_vocab_no_eos.json
+  motif_vocab_path: ${cwd:}/data_and_model/data/4_base_token_vocab_no_eos.json
+  train_csv_path: ${cwd:}/data_and_model/train_dataset_mrl.csv
+  valid_csv_path: ${cwd:}/data_and_model/val_dataset_mrl.csv
+  test_csv_path: null
+  utr_csv_path: ${.train_csv_path}
+  seq_column: utr
+  label_column: null
+  pad_token: N
+  eos_token: null
+  unk_token: null
+  normalize_case: True
+  utr_fasta_path: null
+  streaming: False
+  vocab_size: 5
+  pad_token_id: 4
+  eos_token_id: null
+  mask_token_id: 5
+loader:
+  global_batch_size: 512
+  eval_global_batch_size: ${.global_batch_size}
+  # Note: batch_size and eval_batch_size are **per machine**
+  batch_size: ${div_up:${.global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
+  eval_batch_size: ${div_up:${.eval_global_batch_size}, ${eval:${trainer.devices} * ${trainer.num_nodes}}}
+  # num_workers: ${eval:"len(__import__('os').sched_getaffinity(0))"}
+  num_workers: 4
+  pin_memory: True
+
+
+sampling:
+  predictor: ddpm 
+  steps: 128
+  noise_removal: True
+  num_sample_batches: 2  # Total samples: `num_gpus` * `loader.eval_batch_size` * num_sample_batches
+  num_sample_log: 2
+  semi_ar: False
+  stride_length: 1
+  num_strides: 1
+
+training:
+  ema: 0.9999
+  antithetic_sampling: True
+  importance_sampling: False
+  sampling_eps: 1e-3
+  change_of_variables: False
+
+eval:
+  checkpoint_path: ''  # Used to evaluate a checkpoint after training.
+  disable_ema: False
+  compute_generative_perplexity: True # False
+  perplexity_batch_size: 8
+  compute_perplexity_on_sanity: False
+  gen_ppl_eval_model_name_or_path: gpt2-large  # gpt2-large, meta-llama/Llama-2-7b-hf
+  generate_samples: False
+  subset_size: 15000
+
+optim:
+  weight_decay: 0
+  lr: 3e-4
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1e-8
+
+trainer:
+  _target_: lightning.Trainer
+  accelerator: cuda
+  num_nodes: 1
+  devices: ${device_count:}
+  accumulate_grad_batches: ${div_up:${loader.global_batch_size}, ${eval:${trainer.devices} * ${loader.batch_size} * ${trainer.num_nodes}}}
+  gradient_clip_val: 1.0
+  precision: 'bf16'
+  num_sanity_val_steps: 2
+  max_steps: 51000 # 100 epochs 
+  log_every_n_steps: 10
+  limit_train_batches: 1.0   # train on full dataset, can be used to toggle quick run
+  limit_val_batches: 1.0     # validate on full dataset, can be used to toggle quick run
+  val_check_interval: 510
+  # check_val_every_n_epoch: 1
+
+wandb:
+  project: utr-dna
+  notes: null
+  group: null
+  job_type: null
+  name: null
+  id: ${uuid:}
+  tags:
+    - ${noise.type}
+
+hydra:
+  run:
+    dir: ${cwd:}/outputs/${now:%Y.%m.%d}/${now:%H%M%S}
+  job:
+    chdir: false
+
+checkpointing:
+  # Use custom `save_dir` if, e.g., saving to S3 bucket, otherwise leave this parameter as is
+  save_dir: ${cwd:}/outputs/pretrain_mrl
+  # Note: `checkpoints` path should correspond to `checkpoint_every_n_steps.dirpath`
+  # resume_from_ckpt: true
+  # resume_ckpt_path: ${.save_dir}/checkpoints_motif_50utr_all/last.ckpt
+
+finetuning:
+  gumbel_softmax_temp: 1.0
+  truncate_steps: 50
